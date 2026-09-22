@@ -1,0 +1,13 @@
+{
+    ".url": {
+        "SYNO.SDS.AutoBangumi.Application": {
+            "title": "AutoBangumi",
+            "desc": "AutoBangumi",
+            "icon": "images/icon_{0}.png",
+            "type": "url",
+            "protocol": "http",
+            "port": "7892",
+            "allUsers": false
+        }
+    }
+}

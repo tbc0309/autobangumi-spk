@@ -1,0 +1,29 @@
+### Generic variables and functions
+### -------------------------------
+
+if [ -z "${SYNOPKG_PKGNAME}" ] || [ -z "${SYNOPKG_DSM_VERSION_MAJOR}" ]; then
+  echo "Error: Environment variables are not set." 1>&2;
+  echo "Please run me using synopkg instead. Example: \"synopkg start [packagename]\"" 1>&2;
+  exit 1
+fi
+
+USER="AutoBangumi"
+EFF_USER="AutoBangumi"
+
+# Service port
+SERVICE_PORT="7892"
+
+# start-stop-status script redirect stdout/stderr to LOG_FILE
+LOG_FILE="${SYNOPKG_PKGVAR}/${SYNOPKG_PKGNAME}.log"
+
+# Service command has to deliver its pid into PID_FILE
+PID_FILE="${SYNOPKG_PKGVAR}/${SYNOPKG_PKGNAME}.pid"
+
+
+export PATH="$PATH:${SYNOPKG_PKGDEST}/bin"
+export PYTHONPATH="${SYNOPKG_PKGDEST}/app"
+
+SERVICE_COMMAND="env LD_LIBRARY_PATH=${SYNOPKG_PKGDEST}/lib supervisord -n -c ${SYNOPKG_PKGDEST}/supervisord.conf"
+SVC_CWD="${SYNOPKG_PKGDEST}"
+SVC_BACKGROUND=y
+SVC_WRITE_PID=y

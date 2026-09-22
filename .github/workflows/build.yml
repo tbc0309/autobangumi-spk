@@ -1,0 +1,124 @@
+name: AutoBangumi｜群晖交叉编译并发布（主线）
+
+on:
+  schedule:
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 上游版本，留空自动获取最新版
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cross-build-autobangumi-${{ inputs.version || 'latest' }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      should_build: ${{ steps.resolve.outputs.should_build }}
+    steps:
+      - id: resolve
+        env:
+          REQUESTED: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${REQUESTED}"
+          [ -n "${version}" ] || version="$(gh api repos/EstrellaXD/Auto_Bangumi/releases/latest --jq '.tag_name | ltrimstr("v")')"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          tag="autobangumi-v${version}"
+          if [ "${GITHUB_EVENT_NAME}" = schedule ] && gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "should_build=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "should_build=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+  cross:
+    needs: resolve
+    if: needs.resolve.outputs.should_build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            spksrc_arch: x64
+          - arch: armv8
+            spksrc_arch: rtd1296
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: 缓存 spksrc 工具链和编译结果
+        uses: actions/cache@v4
+        with:
+          path: .spksrc-cache
+          key: autobangumi-spksrc-${{ matrix.arch }}-DSM7.1-v2
+          restore-keys: |
+            autobangumi-spksrc-${{ matrix.arch }}-DSM7.1-
+      - name: 检测并交叉编译必要的原生 Python 依赖
+        run: bash scripts/test_python_crosscompile.sh "${{ matrix.spksrc_arch }}" 7.1 "${{ needs.resolve.outputs.version }}"
+      - name: 保存交叉编译产物
+        uses: actions/upload-artifact@v5
+        with:
+          name: autobangumi-cross-wheel-${{ matrix.arch }}-DSM7.1
+          path: cross-wheels/
+          if-no-files-found: error
+
+  build:
+    needs: [resolve, cross]
+    if: needs.resolve.outputs.should_build == 'true' && needs.cross.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: armv8
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: 下载对应架构交叉编译产物
+        uses: actions/download-artifact@v6
+        with:
+          name: autobangumi-cross-wheel-${{ matrix.arch }}-DSM7.1
+          path: cross-wheels
+      - name: 构建完整 SPK
+        run: bash scripts/build_autobangumi.sh "${{ needs.resolve.outputs.version }}" "${{ matrix.arch }}"
+      - name: 保存完整 SPK
+        uses: actions/upload-artifact@v5
+        with:
+          name: autobangumi-spk-${{ matrix.arch }}-DSM7.1
+          path: dist/${{ matrix.arch }}/*.spk
+          if-no-files-found: error
+
+  release:
+    needs: [resolve, build]
+    if: needs.resolve.outputs.should_build == 'true' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下载全部 SPK
+        uses: actions/download-artifact@v6
+        with:
+          pattern: autobangumi-spk-*
+          path: release-assets
+          merge-multiple: true
+      - name: 重新创建正式 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          tag="autobangumi-v${VERSION}"
+          count="$(find release-assets -maxdepth 1 -type f -name '*.spk' | wc -l)"
+          [ "${count}" -eq 2 ] || { echo "SPK 数量异常：${count}/2"; exit 1; }
+          gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1 && \
+            gh release delete "${tag}" --yes --repo "${GITHUB_REPOSITORY}"
+          gh release create "${tag}" release-assets/*.spk --latest \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "AutoBangumi v${VERSION} for DSM 7.1+" \
+            --notes "基于群晖官方工具链交叉编译。支持 DSM 7.1 及以上版本，提供 x86_64、armv8 套件，依赖 Python 3.14。"
